@@ -1,0 +1,15 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+volume/
+.env
+
+image-upload-service-ec6a9-firebase-adminsdk-fbsvc-1d365a6cf3.json
