@@ -1,3 +1,4 @@
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings
 from typing import Optional
 from functools import lru_cache
@@ -14,8 +15,16 @@ class Settings(BaseSettings):
     S3_REGION: str
     DYNAMODB_TABLE_NAME: str
 
+    #OPENAI Configuration
+    AZURE_OPENAI_API_KEY: SecretStr
+    AZURE_OPENAI_API_VERSION: str
+    AZURE_OPENAI_DEPLOYMENT_NAME: str
+    AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME: str
+    AZURE_OPENAI_ENDPOINT: str
+
     # Firebase Configuration
     FIREBASE_API_KEY: str
+    GEMINI_API_KEY: str
     GOOGLE_CLOUD_PROJECT: Optional[str] = None
     # For local development, path to service account key json file
     GOOGLE_APPLICATION_CREDENTIALS: Optional[str] = None
@@ -38,4 +47,3 @@ def get_settings() -> Settings:
     Returns a cached instance of the Settings object.
     """
     return Settings()
-

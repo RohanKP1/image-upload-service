@@ -2,6 +2,7 @@ import logging
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routers import auth, images
 from app.core.config import get_settings
@@ -10,12 +11,24 @@ from app.core.logging_config import setup_logging
 # --- Application Setup ---
 setup_logging()  # Initialize logging first
 settings = get_settings()
+
 app = FastAPI(
     title="Image Upload Service API",
     description="A robust, asynchronous API for uploading and managing images.",
     version="2.0.0",
 )
+
 logger = logging.getLogger(__name__)
+
+# --- Middleware ---
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
+)
 
 # --- Exception Handlers ---
 @app.exception_handler(RequestValidationError)

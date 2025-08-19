@@ -57,3 +57,45 @@ async def login_for_access_token(
             detail="Incorrect email or password.",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+@router.post("/signup", summary="Sign up for a new account")
+async def signup(
+    settings: Settings = Depends(get_settings),
+    client: AsyncClient = Depends(get_http_client),
+    username: str = Form(..., description="User's email address."),
+    password: str = Form(..., description="User's password.")
+):
+    """
+    Registers a new user with Firebase Authentication.
+    """
+    url = f"https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={settings.FIREBASE_API_KEY}"
+    payload = {
+        "email": username,
+        "password": password,
+        "returnSecureToken": True
+    }
+    try:
+        resp = await client.post(url, json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+        id_token = data.get("idToken")
+        if not id_token:
+            logger.error("Firebase signup response missing idToken.")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Could not create account with authentication service.",
+            )
+        return {"access_token": id_token, "token_type": "bearer"}
+    except HTTPStatusError as e:
+        logger.warning(f"Failed signup attempt for user: {username}")
+        detail = "Account creation failed."
+        if e.response is not None:
+            try:
+                err = e.response.json()
+                detail = err.get("error", {}).get("message", detail)
+            except Exception:
+                pass
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=detail,
+        )

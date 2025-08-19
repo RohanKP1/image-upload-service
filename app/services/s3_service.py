@@ -26,7 +26,6 @@ class S3Service:
         if not object_key:
             return None
         try:
-            # <<< CORRECTED: Added 'await' before self._get_client()
             async with await self._get_client() as client:
                 url = await client.generate_presigned_url(
                     'get_object',
@@ -44,23 +43,6 @@ class S3Service:
             logger.error(f"Failed to generate presigned GET URL for {object_key}: {e}")
             return None
 
-    async def upload_file(self, file: UploadFile, object_key: str) -> None:
-        try:
-            client = await self._get_client()
-            async with client as s3_client:
-                file.file.seek(0)
-                data = file.file.read()
-                await s3_client.put_object(
-                    Bucket=self.settings.S3_BUCKET,
-                    Key=object_key,
-                    Body=data,
-                    ContentType=file.content_type
-                )
-                logger.info(f"Successfully uploaded {file.filename} to S3 key {object_key}")
-        except ClientError as e:
-            logger.error(f"Failed to upload file to S3: {e}")
-            raise
-
     async def upload_fileobj(self, file_obj, object_key: str, content_type: str) -> None:
         try:
             client = await self._get_client()
@@ -77,3 +59,23 @@ class S3Service:
         except ClientError as e:
             logger.error(f"Failed to upload file object to S3: {e}")
             raise
+
+    async def get_object(self, object_key: str) -> Optional[bytes]:
+        """Retrieves an object's content from S3."""
+        if not object_key:
+            return None
+        try:
+            client = await self._get_client()
+            async with client as s3_client:
+                response = await s3_client.get_object(
+                    Bucket=self.settings.S3_BUCKET, Key=object_key
+                )
+                content = await response["Body"].read()
+                logger.debug(f"Successfully retrieved object from S3 key {object_key}")
+                return content
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "NoSuchKey":
+                logger.warning(f"Object not found at S3 key {object_key}")
+            else:
+                logger.error(f"Failed to get object from S3: {e}")
+            return None
