@@ -1,8 +1,5 @@
 import logging
-from datetime import datetime, timezone
 from typing import List
-from io import BytesIO
-from PIL import Image
 
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, status
 
@@ -34,19 +31,6 @@ from app.controllers.images import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
-def create_thumbnail(image_content: bytes) -> BytesIO:
-    """CPU-bound thumbnail generation logic."""
-    try:
-        img = Image.open(BytesIO(image_content)).convert("RGB")
-        img.thumbnail((256, 256))
-        out = BytesIO()
-        img.save(out, format="JPEG", quality=85)
-        out.seek(0)
-        return out
-    except Exception as e:
-        logger.exception("Failed to create thumbnail")
-        raise
 
 @router.post("/upload", response_model=List[ImageUploadResponse], status_code=status.HTTP_201_CREATED)
 async def upload_image(
