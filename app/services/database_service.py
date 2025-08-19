@@ -181,3 +181,100 @@ class DynamoDBService:
         except ClientError:
             logger.exception("Failed to fetch user images")
             return []
+
+    async def update_image_cluster(
+        self,
+        user_id: str,
+        image_id: str,
+        cluster_id: Optional[int],
+        cluster_name: Optional[str] = None,
+    ) -> None:
+        """Update a single image's cluster assignment (id and/or name).
+
+        Passing None for a field removes that attribute.
+        """
+        try:
+            client = await self._get_client()
+            async with client as dynamodb:
+                set_parts = []
+                remove_parts = []
+                expr_vals: Dict[str, Any] = {}
+
+                if cluster_id is not None:
+                    set_parts.append("cluster_id = :cid")
+                    expr_vals[":cid"] = {"N": str(cluster_id)}
+                else:
+                    remove_parts.append("cluster_id")
+
+                if cluster_name is not None:
+                    set_parts.append("cluster_name = :cname")
+                    expr_vals[":cname"] = {"S": cluster_name}
+                else:
+                    remove_parts.append("cluster_name")
+
+                update_expr_sections = []
+                if set_parts:
+                    update_expr_sections.append("SET " + ", ".join(set_parts))
+                if remove_parts:
+                    update_expr_sections.append("REMOVE " + ", ".join(remove_parts))
+                update_expression = " ".join(update_expr_sections)
+
+                await dynamodb.update_item(
+                    TableName=self.settings.DYNAMODB_TABLE_NAME,
+                    Key={"user_id": {"S": user_id}, "image_id": {"S": image_id}},
+                    UpdateExpression=update_expression,
+                    ExpressionAttributeValues=expr_vals or None,
+                )
+            logger.debug("Updated cluster for user %s image %s -> id=%s name=%s", user_id, image_id, cluster_id, cluster_name)
+        except ClientError:
+            logger.exception("Failed to update image cluster assignment")
+            raise
+
+    async def bulk_update_image_clusters(
+        self,
+        user_id: str,
+        assignments: Dict[str, Optional[int]],
+        cluster_names: Optional[Dict[int, str]] = None,
+    ) -> None:
+        """Bulk update cluster assignments for many images.
+
+        assignments maps image_id -> cluster_id (or None to clear).
+        cluster_names maps cluster_id -> name and is applied where available.
+        """
+        cluster_names = cluster_names or {}
+        try:
+            client = await self._get_client()
+            async with client as dynamodb:
+                for image_id, cid in assignments.items():
+                    set_parts = []
+                    remove_parts = []
+                    expr_vals: Dict[str, Any] = {}
+
+                    if cid is not None:
+                        set_parts.append("cluster_id = :cid")
+                        expr_vals[":cid"] = {"N": str(cid)}
+                        # apply name when provided; else keep existing if any
+                        cname = cluster_names.get(cid)
+                        if cname is not None:
+                            set_parts.append("cluster_name = :cname")
+                            expr_vals[":cname"] = {"S": cname}
+                    else:
+                        remove_parts.extend(["cluster_id", "cluster_name"])
+
+                    update_expr_sections = []
+                    if set_parts:
+                        update_expr_sections.append("SET " + ", ".join(set_parts))
+                    if remove_parts:
+                        update_expr_sections.append("REMOVE " + ", ".join(remove_parts))
+                    update_expression = " ".join(update_expr_sections)
+
+                    await dynamodb.update_item(
+                        TableName=self.settings.DYNAMODB_TABLE_NAME,
+                        Key={"user_id": {"S": user_id}, "image_id": {"S": image_id}},
+                        UpdateExpression=update_expression,
+                        ExpressionAttributeValues=expr_vals or None,
+                    )
+            logger.info("Bulk updated %d image cluster assignments for user %s", len(assignments), user_id)
+        except ClientError:
+            logger.exception("Failed bulk update of image cluster assignments")
+            raise

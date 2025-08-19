@@ -38,6 +38,7 @@ async def upload_images_controller(
     db_service: DynamoDBService,
     embedding_service: EmbeddingService,
     description_service: DescriptionService,
+    naming_service: NamingService,
 ) -> List[ImageUploadResponse]:
     responses: List[ImageUploadResponse] = []
 
@@ -84,6 +85,111 @@ async def upload_images_controller(
                 "description": description,
             }
             await db_service.add_image_record(record)
+
+            # Attempt to assign new image into an existing cluster if any
+            try:
+                # Simple heuristic: fetch user's images with cluster_id and try nearest by cosine
+                user_images = await db_service.get_user_images(current_user.id)
+                # Build representative vectors for clusters (mean embedding)
+                from collections import defaultdict
+                import numpy as np
+                cluster_vecs: Dict[int, List[List[float]]] = defaultdict(list)
+                for rec in user_images:
+                    if rec.get("cluster_id") is not None and rec.get("embedding"):
+                        cluster_vecs[int(rec["cluster_id"])].append(rec["embedding"]) 
+                assigned = False
+                if cluster_vecs and embedding:
+                    # Normalize new embedding
+                    e = np.asarray(embedding, dtype=float)
+                    e_norm = np.linalg.norm(e)
+                    if e_norm == 0:
+                        logger.warning("New image embedding has zero norm; skipping auto-assign.")
+                    else:
+                        e = e / e_norm
+
+                        # Build per-cluster normalized embeddings and centroids
+                        centroids: Dict[int, np.ndarray] = {}
+                        cluster_sizes: Dict[int, int] = {}
+                        cluster_means: Dict[int, float] = {}
+                        cluster_stds: Dict[int, float] = {}
+
+                        for cid, vecs in cluster_vecs.items():
+                            X = np.asarray(vecs, dtype=float)
+                            if X.ndim != 2 or X.shape[0] == 0:
+                                continue
+                            # Normalize rows; filter zeros
+                            norms = np.linalg.norm(X, axis=1)
+                            mask = norms > 0
+                            if not np.any(mask):
+                                continue
+                            Xn = X[mask] / norms[mask][:, None]
+                            c = Xn.mean(axis=0)
+                            c_norm = np.linalg.norm(c)
+                            if c_norm == 0:
+                                continue
+                            c = c / c_norm
+                            sims = Xn @ c
+                            centroids[cid] = c
+                            cluster_sizes[cid] = Xn.shape[0]
+                            cluster_means[cid] = float(sims.mean())
+                            cluster_stds[cid] = float(sims.std(ddof=0))
+
+                        if centroids:
+                            # Compute similarities to centroids
+                            sims = {cid: float(e @ c) for cid, c in centroids.items()}
+                            # Sort to get best and second-best
+                            ranked = sorted(sims.items(), key=lambda kv: kv[1], reverse=True)
+                            best_cid, best_sim = ranked[0]
+                            second_best_sim = ranked[1][1] if len(ranked) > 1 else -1.0
+
+                            # Adaptive acceptance criteria
+                            base_threshold = 0.80
+                            margin = 0.05  # require separation from 2nd best
+                            tightness = 0.07  # how close to the cluster's typical cohesion we require
+
+                            size = cluster_sizes.get(best_cid, 1)
+                            mean_sim = cluster_means.get(best_cid, 0.0)
+                            std_sim = cluster_stds.get(best_cid, 0.0)
+
+                            # For tiny clusters, be stricter; for larger, use adaptive threshold
+                            required = base_threshold
+                            if size <= 1:
+                                required = max(required, 0.92)
+                            else:
+                                # Demand the new point be close to the cluster's typical cohesion
+                                required = max(required, mean_sim - tightness)
+                                # Optionally also not too far below 1 std below mean (commented to avoid over-conservatism)
+                                # required = max(required, mean_sim - std_sim)
+
+                            accept = (best_sim >= required) and ((best_sim - second_best_sim) >= margin)
+
+                            logger.info(
+                                "Auto-assign decision: best_cid=%s best_sim=%.3f second_best=%.3f size=%d mean=%.3f std=%.3f required=%.3f accept=%s",
+                                best_cid, best_sim, second_best_sim, size, mean_sim, std_sim, required, accept,
+                            )
+
+                            if accept:
+                                await db_service.update_image_cluster(current_user.id, image_id, best_cid)
+                                record["cluster_id"] = best_cid
+                                assigned = True
+
+                # If not assigned to an existing cluster, create a new cluster id
+                if not assigned:
+                    existing_cids = [int(rec["cluster_id"]) for rec in user_images if rec.get("cluster_id") is not None]
+                    new_cid = (max(existing_cids) + 1) if existing_cids else 0
+                    # Try generating a name using the single-image description if available
+                    cname = None
+                    try:
+                        if description:
+                            cname = await naming_service.generate_cluster_name([description])
+                    except Exception:
+                        logger.exception("Failed to generate name for new cluster")
+                    await db_service.update_image_cluster(current_user.id, image_id, new_cid, cname)
+                    record["cluster_id"] = new_cid
+                    if cname:
+                        record["cluster_name"] = cname
+            except Exception:
+                logger.exception("Failed to auto-assign cluster for new image %s", image_id)
 
             original_url = await s3_service.generate_presigned_get_url(original_key)
             thumbnail_url = await s3_service.generate_presigned_get_url(thumbnail_key)
@@ -216,4 +322,61 @@ async def cluster_user_images_controller(
 
     unclustered_response = [image_responses_map[img_id] for img_id in unclustered_image_ids if img_id in image_responses_map]
 
+    # Persist cluster assignments to DB (cluster_id per image, and optional names)
+    try:
+        # Build assignments mapping image_id -> cluster_id
+        assignments: Dict[str, int] = {}
+        for cid, ids in clustered_image_ids.items():
+            for iid in ids:
+                assignments[iid] = cid
+        await db_service.bulk_update_image_clusters(current_user.id, assignments, cluster_names)
+    except Exception:
+        logger.exception("Failed to persist cluster assignments to DB")
+
     return ClusterResponse(clusters=clusters_response, unclustered=unclustered_response)
+
+
+async def get_clusters_controller(
+    current_user: User,
+    db_service: DynamoDBService,
+    s3_service: S3Service,
+) -> List[ImageCluster]:
+    """Return clusters as stored in DB, grouped by cluster_id.
+
+    Images with no cluster_id are ignored here (considered unclustered).
+    """
+    records = await db_service.get_user_images(current_user.id)
+    from collections import defaultdict
+    grouped: Dict[int, List[Dict]] = defaultdict(list)
+    names: Dict[int, str] = {}
+    for rec in records:
+        cid = rec.get("cluster_id")
+        if cid is None:
+            continue
+        grouped[int(cid)].append(rec)
+        if rec.get("cluster_name"):
+            names[int(cid)] = rec["cluster_name"]
+
+    # Build ImageCluster responses with presigned URLs
+    clusters: List[ImageCluster] = []
+    for cid, recs in grouped.items():
+        async def _one(r: Dict) -> ImageResponse:
+            original_url, thumbnail_url = await asyncio.gather(
+                s3_service.generate_presigned_get_url(r["original_key"]),
+                s3_service.generate_presigned_get_url(r.get("thumbnail_key")),
+            )
+            return ImageResponse(
+                id=r["image_id"],
+                filename=r["filename"],
+                uploaded_at=r["uploaded_at"],
+                original_url=original_url,
+                thumbnail_url=thumbnail_url,
+                embedding=r.get("embedding"),
+                description=r.get("description"),
+                cluster_id=cid,
+                cluster_name=names.get(cid),
+            )
+
+        images = await asyncio.gather(*[_one(r) for r in recs])
+        clusters.append(ImageCluster(cluster_id=cid, name=names.get(cid), images=images))
+    return clusters

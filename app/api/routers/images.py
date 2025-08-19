@@ -27,6 +27,7 @@ from app.controllers.images import (
     list_user_images_controller,
     get_image_details_controller,
     cluster_user_images_controller,
+    get_clusters_controller,
 )
 
 logger = logging.getLogger(__name__)
@@ -39,13 +40,14 @@ async def upload_image(
     s3_service: S3Service = Depends(get_s3_service),
     db_service: DynamoDBService = Depends(get_db_service),
     embedding_service: EmbeddingService = Depends(get_embedding_service),
-    description_service: DescriptionService = Depends(get_description_service)
+    description_service: DescriptionService = Depends(get_description_service),
+    naming_service: NamingService = Depends(get_naming_service),
 ):
     """
     Upload one or more image files. Accepts multiple files in the `files` form field.
     Returns a list of ImageUploadResponse objects.
     """
-    return await upload_images_controller(files, current_user, s3_service, db_service, embedding_service, description_service)
+    return await upload_images_controller(files, current_user, s3_service, db_service, embedding_service, description_service, naming_service)
 
 @router.get("", response_model=List[ImageResponse])
 async def list_user_images(
@@ -55,6 +57,14 @@ async def list_user_images(
 ):
     """Lists all images for the authenticated user."""
     return await list_user_images_controller(current_user, s3_service, db_service)
+
+@router.get("/clusters", response_model=List[ImageCluster], summary="Get stored clusters")
+async def get_clusters(
+    current_user: User = Depends(get_current_user),
+    db_service: DynamoDBService = Depends(get_db_service),
+    s3_service: S3Service = Depends(get_s3_service),
+):
+    return await get_clusters_controller(current_user, db_service, s3_service)
 
 @router.get("/{image_id}", response_model=ImageResponse)
 async def get_image_details(
@@ -81,3 +91,6 @@ async def cluster_user_images(
     Optionally generates a descriptive name for each cluster using a vision model.
     """
     return await cluster_user_images_controller(request, current_user, db_service, s3_service, clustering_service, naming_service)
+
+
+# (Static routes are intentionally placed before the dynamic '/{image_id}' route to avoid shadowing.)

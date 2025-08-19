@@ -9,6 +9,8 @@ class ImageBase(BaseModel):
     uploaded_at: datetime
     embedding: Optional[List[float]] = None
     description: Optional[str] = None
+    cluster_id: Optional[int] = None
+    cluster_name: Optional[str] = None
     original_url: Optional[HttpUrl] = None
     thumbnail_url: Optional[HttpUrl] = None
 
@@ -28,6 +30,8 @@ class ImageUploadResponse(BaseModel):
     thumbnail_url: HttpUrl
     embedding: List[float]
     description: Optional[str] = None
+    cluster_id: Optional[int] = None
+    cluster_name: Optional[str] = None
 
 
 class ClusteringAlgorithm(str, Enum):
