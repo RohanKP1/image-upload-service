@@ -29,6 +29,9 @@ from app.controllers.images import (
     cluster_user_images_controller,
     get_clusters_controller,
 )
+from app.core.config import get_settings
+from fastapi.responses import StreamingResponse
+from io import BytesIO
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -65,6 +68,45 @@ async def get_clusters(
     s3_service: S3Service = Depends(get_s3_service),
 ):
     return await get_clusters_controller(current_user, db_service, s3_service)
+
+# Proxy streaming endpoints (used when IMAGE_URL_MODE=proxy)
+@router.get("/{image_id}/original", include_in_schema=False)
+async def stream_original(
+    image_id: str,
+    current_user: User = Depends(get_current_user),
+    s3_service: S3Service = Depends(get_s3_service),
+    db_service: DynamoDBService = Depends(get_db_service),
+):
+    settings = get_settings()
+    if settings.IMAGE_URL_MODE != "proxy":
+        return {"detail": "Proxy mode is disabled"}
+    record = await db_service.get_image_record(current_user.id, image_id)
+    if not record:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found")
+    data = await s3_service.get_object(record["original_key"])
+    if data is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Object not found")
+    return StreamingResponse(BytesIO(data), media_type=record.get("content_type") or "application/octet-stream")
+
+@router.get("/{image_id}/thumbnail", include_in_schema=False)
+async def stream_thumbnail(
+    image_id: str,
+    current_user: User = Depends(get_current_user),
+    s3_service: S3Service = Depends(get_s3_service),
+    db_service: DynamoDBService = Depends(get_db_service),
+):
+    settings = get_settings()
+    if settings.IMAGE_URL_MODE != "proxy":
+        return {"detail": "Proxy mode is disabled"}
+    record = await db_service.get_image_record(current_user.id, image_id)
+    if not record:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found")
+    if not record.get("thumbnail_key"):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thumbnail not available")
+    data = await s3_service.get_object(record["thumbnail_key"])
+    if data is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Object not found")
+    return StreamingResponse(BytesIO(data), media_type="image/jpeg")
 
 @router.get("/{image_id}", response_model=ImageResponse)
 async def get_image_details(

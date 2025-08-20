@@ -2,7 +2,7 @@
 
 This project is a production-grade, asynchronous REST API built with FastAPI for handling user authentication and image management. It provides a secure and scalable backend for applications that need to store and retrieve user-specific images.
 
-The entire development environment is containerized using Docker and Docker Compose, with LocalStack providing a local cloud environment for AWS services (S3 and DynamoDB), making setup and testing seamless.
+The service stores images in S3 and metadata in DynamoDB on AWS.
 
 ## Features
 
@@ -12,7 +12,7 @@ The entire development environment is containerized using Docker and Docker Comp
 -   **Automatic Thumbnail Generation**: Creates a thumbnail for each uploaded image in a non-blocking thread pool to avoid stalling the server.
 -   **Structured Metadata**: Stores image metadata (filename, user ID, S3 keys, etc.) in a DynamoDB table for fast and efficient querying.
 -   **Presigned URLs**: Serves images securely via time-limited, presigned S3 URLs, preventing direct public access to the S3 bucket.
--   **Local Development Environment**: Uses Docker Compose and LocalStack to fully replicate the cloud environment on a local machine.
+-   **Local Development Environment**: Run the FastAPI app locally; connect to your AWS resources.
 -   **Production-Ready Practices**: Implements dependency injection, centralized configuration via `.env` files, structured logging, and robust error handling.
 
 ## Tech Stack
@@ -20,7 +20,7 @@ The entire development environment is containerized using Docker and Docker Comp
 -   **Backend**: FastAPI, Uvicorn
 -   **Authentication**: Firebase Admin SDK
 -   **Cloud Services (AWS)**: S3, DynamoDB
--   **Local Cloud Emulation**: LocalStack
+-   **Cloud**: AWS (S3, DynamoDB)
 -   **Containerization**: Docker, Docker Compose
 -   **Async Libraries**: `aiobotocore`, `httpx`
 -   **Image Processing**: Pillow
@@ -38,96 +38,166 @@ The entire development environment is containerized using Docker and Docker Comp
 │   ├── core/           # Core logic (config, logging)
 │   ├── models/         # Pydantic data models
 │   └── services/       # Business logic (S3, DB, Auth services)
-├── Dockerfile          # Docker configuration for the FastAPI app
-├── docker-compose.yml  # Defines and orchestrates all services
-├── requirements.txt    # Python dependencies
-└── setup_localstack.sh # Script to provision local AWS resources
+# Image Upload Service (AWS + FastAPI)
+
+An asynchronous FastAPI API to upload, describe, embed, cluster, and serve user images. Images are stored in Amazon S3, metadata in DynamoDB, users are authenticated with Firebase, and descriptions/embeddings/names are generated with Azure OpenAI.
+
+## Features
+
+- Async I/O across the stack (FastAPI, aiobotocore)
+- Firebase Authentication (email/password → ID token)
+- S3 storage with thumbnails; DynamoDB metadata per image
+- Image descriptions and cluster names via Azure OpenAI Chat
+- Embeddings via Azure OpenAI Embeddings; clustering and re-clustering
+- Auto-assign new uploads to the best existing cluster with adaptive logic
+- Two serving modes for image URLs: presigned (default) or API proxy
+- Clean separation: routers + controllers + services
+
+## Tech stack
+
+- FastAPI, Uvicorn
+- AWS S3, DynamoDB (aiobotocore)
+- Pillow (thumbnails)
+- scikit-learn (clustering)
+- Firebase Admin, httpx
+- pydantic-settings
+- langchain-openai (Azure OpenAI)
+
+## Project structure
+
+```
+.
+├── .env                   # Environment variables (not committed)
+├── .env.aws.example       # Example AWS configuration
+├── docker-compose.yml     # Starts the API server (FastAPI only)
+├── Dockerfile             # Container for the API
+├── main.py                # FastAPI app entrypoint
+├── requirements.txt       # Python dependencies
+├── pyproject.toml         # Project metadata (optional)
+└── app/
+    ├── api/
+    │   ├── deps.py
+    │   └── routers/
+    │       ├── auth.py
+    │       └── images.py
+    ├── controllers/
+    │   └── images.py
+    ├── core/
+    │   ├── config.py
+    │   └── logging_config.py
+    ├── models/
+    │   ├── image.py
+    │   ├── token.py
+    │   └── user.py
+    └── services/
+        ├── auth_service.py
+        ├── clustering_service.py
+        ├── database_service.py
+        ├── description_service.py
+        ├── embedding_service.py
+        ├── naming_service.py
+        └── s3_service.py
 ```
 
-## Getting Started
+## Setup
 
-Follow these instructions to get the project running on your local machine.
+### 1) AWS resources
 
-### Prerequisites
+Create these once in your AWS account:
 
--   [Docker](https://www.docker.com/get-started/)
--   [Docker Compose](https://docs.docker.com/compose/install/) (usually included with Docker Desktop)
+- S3 bucket: S3_BUCKET (in S3_REGION)
+- DynamoDB table: DYNAMODB_TABLE_NAME
+  - Partition key: user_id (String)
+  - Sort key: image_id (String)
+- Grant your principal permissions: s3:PutObject, s3:GetObject, dynamodb:PutItem, dynamodb:GetItem, dynamodb:Query, dynamodb:UpdateItem
 
-### 1. Clone the Repository
+Optional CLI examples:
 
-```bash
-git clone 
-cd 
+```
+aws s3api create-bucket --bucket your-bucket --region us-east-1 --create-bucket-configuration LocationConstraint=us-east-1
+
+aws dynamodb create-table \
+  --table-name your-dynamo-table \
+  --attribute-definitions AttributeName=user_id,AttributeType=S AttributeName=image_id,AttributeType=S \
+  --key-schema AttributeName=user_id,KeyType=HASH AttributeName=image_id,KeyType=RANGE \
+  --billing-mode PAY_PER_REQUEST \
+  --region us-east-1
 ```
 
-### 2. Firebase Project Setup
+### 2) Environment variables (.env)
 
-This service requires a Google Firebase project for user authentication.
+```
+# AWS
+AWS_ACCESS_KEY_ID=...
+AWS_SECRET_ACCESS_KEY=...
+AWS_SESSION_TOKEN=            # optional (for STS)
+AWS_DEFAULT_REGION=us-east-1
+S3_REGION=us-east-1
+S3_BUCKET=your-bucket
+DYNAMODB_TABLE_NAME=your-dynamo-table
 
-1.  **Create a Firebase Project**: Go to the [Firebase Console](https://console.firebase.google.com/) and create a new project.
-2.  **Enable Email/Password Authentication**: In your project, go to **Authentication** -> **Sign-in method** and enable the **Email/Password** provider.
-3.  **Get Web API Key**:
-    -   Go to **Project Settings** (gear icon).
-    -   In the **General** tab, under "Your apps", create a new **Web app** (the `` icon).
-    -   After creating the app, you will find the `apiKey` in the `firebaseConfig` object. This is your `FIREBASE_API_KEY`.
-4.  **Generate a Service Account Key**:
-    -   In **Project Settings**, go to the **Service accounts** tab.
-    -   Click **Generate new private key** and save the downloaded JSON file as `serviceAccountKey.json` in the root of this project directory.
+# Optional S3 controls
+S3_ACL=                       # e.g., bucket-owner-full-control
+S3_SERVER_SIDE_ENCRYPTION=    # e.g., AES256 or aws:kms
+S3_SSE_KMS_KEY_ID=            # required only if using aws:kms
+S3_ADDRESSING_STYLE=          # 'virtual' (default) or 'path'
 
-### 3. Configure Environment Variables
+# App
+LOG_LEVEL=INFO
+IMAGE_URL_MODE=presigned      # 'presigned' (default) or 'proxy'
 
-The project uses a `.env` file for all configuration.
+# Firebase
+FIREBASE_API_KEY=...
+GOOGLE_CLOUD_PROJECT=...
+GOOGLE_APPLICATION_CREDENTIALS=/app/serviceAccountKey.json
 
-1.  **Create the `.env` file**: Copy the example file to create your local configuration.
-
-2.  **Edit the `.env` file**: Open the new `.env` file and fill in the required values.
-
-    ```env
-    # .env
-    
-    # AWS & LocalStack Configuration
-    AWS_ACCESS_KEY_ID=test
-    AWS_SECRET_ACCESS_KEY=test
-    AWS_DEFAULT_REGION=us-east-1
-    S3_BUCKET=my-local-image-bucket
-    S3_REGION=us-east-1
-    DYNAMODB_TABLE_NAME=ImageMetadata
-    
-    # Endpoints for Docker Networking
-    LOCALSTACK_ENDPOINT_URL=http://localstack:4566
-    S3_PRESIGNED_URL_ENDPOINT="http://localhost:4566"
-    
-    # Firebase Configuration
-    FIREBASE_API_KEY="YOUR_REAL_FIREBASE_API_KEY_HERE"
-    GOOGLE_CLOUD_PROJECT="your-google-cloud-project-id"
-    # This should point to the service account key file inside the container
-    GOOGLE_APPLICATION_CREDENTIALS=/app/serviceAccountKey.json
-    ```
-
-### 4. Build and Run the Services
-
-Use Docker Compose to build the images and start all the services (FastAPI, LocalStack, and the setup script).
-
-```bash
-docker-compose up --build
+# Azure OpenAI
+AZURE_OPENAI_API_KEY=...
+AZURE_OPENAI_API_VERSION=...
+AZURE_OPENAI_DEPLOYMENT_NAME=...
+AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME=...
+AZURE_OPENAI_ENDPOINT=...
 ```
 
--   `localstack`: Starts the AWS emulator.
--   `setup-localstack`: Waits for LocalStack to be healthy, then runs the `setup_localstack.sh` script to create the S3 bucket and DynamoDB table.
--   `fastapi`: Starts the API server on `http://localhost:8000`.
+### 3) Run the API
 
-The API will be available at `http://localhost:8000` and will auto-reload on code changes.
+- Docker: docker compose up --build
+- Local: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
-To stop the services, press `CTRL+C` or run `docker-compose down`.
+API is served at http://localhost:8000.
 
-## API Endpoints
+## API endpoints (prefix /api/v1)
 
-All endpoints are prefixed with `/api/v1`.
+Authentication
+- POST /auth/token – exchange email/password for Firebase ID token
+- GET /auth/me – current user
 
-### Authentication
+Images
+- POST /images/upload – upload one or more images (multipart field files)
+  - Pipeline: thumbnail → description (Azure) → embedding (Azure) → S3 + DynamoDB → auto-assign to cluster
+- GET /images – list images with URLs and metadata
+- GET /images/{image_id} – image details
+- POST /images/cluster – run clustering and optionally name clusters; persists assignments
+- GET /images/clusters – read clusters as stored, with URLs inside
 
-#### `POST /auth/token`
+URL modes
+- Default: presigned S3 URLs (expire after ~1 hour)
+- Proxy: if IMAGE_URL_MODE=proxy, responses contain API routes:
+  - GET /images/{id}/original
+  - GET /images/{id}/thumbnail
 
+## Troubleshooting
+
+- SignatureDoesNotMatch (presigned): do not rewrite the presigned host; ensure regions match; check system clock.
+- AccessDenied (PutObject): set S3_ACL and/or S3_SERVER_SIDE_ENCRYPTION per bucket policy; verify IAM permissions.
+- DynamoDB ValidationException: confirm the table and key schema.
+- Azure errors: verify keys, version, and deployment names.
+- Firebase: ensure email/password auth is enabled and user exists.
+
+## Notes
+
+- Auto-assignment to clusters uses normalized centroids, per-cluster cohesion stats, and a margin over the second-best match.
+- Cluster names are generated from image descriptions via Azure OpenAI Chat.
 Exchanges user email and password for a Firebase ID Token (JWT).
 
 **Request Body (form-data):**

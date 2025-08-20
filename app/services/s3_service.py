@@ -14,13 +14,22 @@ class S3Service:
         self.session = get_session()
 
     async def _get_client(self):
-        return self.session.create_client(
-            "s3",
-            region_name=self.settings.S3_REGION,
-            endpoint_url=self.settings.LOCALSTACK_ENDPOINT_URL,
-            aws_access_key_id=self.settings.AWS_ACCESS_KEY_ID,
-            aws_secret_access_key=self.settings.AWS_SECRET_ACCESS_KEY,
+        client_kwargs = {
+            "region_name": self.settings.S3_REGION,
+            "aws_access_key_id": self.settings.AWS_ACCESS_KEY_ID,
+            "aws_secret_access_key": self.settings.AWS_SECRET_ACCESS_KEY,
+        }
+        if self.settings.AWS_SESSION_TOKEN:
+            client_kwargs["aws_session_token"] = self.settings.AWS_SESSION_TOKEN
+        # Configure signature version and addressing style (virtual by default on AWS).
+        from botocore.config import Config as BotoConfig
+        addressing_style = (
+            self.settings.S3_ADDRESSING_STYLE
+            if self.settings.S3_ADDRESSING_STYLE in {"virtual", "path"}
+            else "virtual"
         )
+        client_kwargs["config"] = BotoConfig(signature_version="s3v4", s3={"addressing_style": addressing_style})
+        return self.session.create_client("s3", **client_kwargs)
 
     async def generate_presigned_get_url(self, object_key: str) -> Optional[str]:
         if not object_key:
@@ -32,11 +41,6 @@ class S3Service:
                     Params={'Bucket': self.settings.S3_BUCKET, 'Key': object_key},
                     ExpiresIn=3600
                 )
-                if self.settings.S3_PRESIGNED_URL_ENDPOINT and self.settings.LOCALSTACK_ENDPOINT_URL:
-                    url = url.replace(
-                        self.settings.LOCALSTACK_ENDPOINT_URL, 
-                        self.settings.S3_PRESIGNED_URL_ENDPOINT
-                    )
                 logger.debug(f"Generated presigned GET URL for {object_key}")
                 return url
         except ClientError as e:
@@ -49,12 +53,25 @@ class S3Service:
             async with client as s3_client:
                 file_obj.seek(0)
                 data = file_obj.read()
-                await s3_client.put_object(
-                    Bucket=self.settings.S3_BUCKET,
-                    Key=object_key,
-                    Body=data,
-                    ContentType=content_type
-                )
+                put_kwargs = {
+                    "Bucket": self.settings.S3_BUCKET,
+                    "Key": object_key,
+                    "Body": data,
+                    "ContentType": content_type,
+                }
+                # Optional ACL if bucket policy requires ownership control
+                if self.settings.S3_ACL:
+                    put_kwargs["ACL"] = self.settings.S3_ACL
+                # Optional server-side encryption
+                if self.settings.S3_SERVER_SIDE_ENCRYPTION:
+                    put_kwargs["ServerSideEncryption"] = self.settings.S3_SERVER_SIDE_ENCRYPTION
+                    if (
+                        self.settings.S3_SERVER_SIDE_ENCRYPTION == "aws:kms"
+                        and self.settings.S3_SSE_KMS_KEY_ID
+                    ):
+                        put_kwargs["SSEKMSKeyId"] = self.settings.S3_SSE_KMS_KEY_ID
+
+                await s3_client.put_object(**put_kwargs)
                 logger.info(f"Successfully uploaded file object to S3 key {object_key}")
         except ClientError as e:
             logger.error(f"Failed to upload file object to S3: {e}")

@@ -31,13 +31,14 @@ class DynamoDBService:
         The method returns a client instance that can be used in an
         async context manager (``async with client as dynamodb``).
         """
-        return self.session.create_client(
-            "dynamodb",
-            region_name=self.settings.S3_REGION,
-            endpoint_url=self.settings.LOCALSTACK_ENDPOINT_URL,
-            aws_access_key_id=self.settings.AWS_ACCESS_KEY_ID,
-            aws_secret_access_key=self.settings.AWS_SECRET_ACCESS_KEY,
-        )
+        client_kwargs = {
+            "region_name": self.settings.AWS_DEFAULT_REGION or self.settings.S3_REGION,
+            "aws_access_key_id": self.settings.AWS_ACCESS_KEY_ID,
+            "aws_secret_access_key": self.settings.AWS_SECRET_ACCESS_KEY,
+        }
+        if self.settings.AWS_SESSION_TOKEN:
+            client_kwargs["aws_session_token"] = self.settings.AWS_SESSION_TOKEN
+        return self.session.create_client("dynamodb", **client_kwargs)
 
     # ---- Serialization helpers -------------------------------------------------
     def _is_numeric_sequence(self, value: Sequence[Any]) -> bool:

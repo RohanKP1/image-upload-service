@@ -54,8 +54,6 @@ async def read_root():
 async def startup_event():
     logger.info("--- Starting FastAPI application ---")
     logger.info(f"Log level set to: {settings.LOG_LEVEL}")
-    if settings.LOCALSTACK_ENDPOINT_URL:
-        logger.warning(f"Using LocalStack endpoint: {settings.LOCALSTACK_ENDPOINT_URL}")
     logger.info("Application startup complete.")
 
 @app.on_event("shutdown")

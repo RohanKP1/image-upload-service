@@ -1,40 +1,4 @@
 services:
-  localstack:
-    container_name: "localstack_main"
-    image: localstack/localstack:latest
-    ports:
-      - "127.0.0.1:4566:4566"
-      - "127.0.0.1:4510-4559:4510-4559"
-    environment:
-      - DEBUG=1
-      - SERVICES=s3,dynamodb,iam
-      - DOCKER_HOST=unix:///var/run/docker.sock
-    volumes:
-      - "${LOCALSTACK_VOLUME_DIR:-./volume}:/var/lib/localstack"
-      - "/var/run/docker.sock:/var/run/docker.sock"
-    healthcheck:
-      # This more robust healthcheck gives LocalStack time to start up.
-      test: ["CMD-SHELL", "curl -s -f http://localhost:4566/_localstack/health || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 60s
-
-  setup-localstack:
-    image: localstack/localstack:latest
-    depends_on:
-      localstack:
-        condition: service_healthy
-    entrypoint: ["/bin/bash", "-c"]
-    command: /var/lib/localstack/setup_localstack.sh
-    volumes:
-      - ./setup_localstack.sh:/var/lib/localstack/setup_localstack.sh
-    environment:
-      - AWS_ACCESS_KEY_ID=test
-      - AWS_SECRET_ACCESS_KEY=test
-      - AWS_DEFAULT_REGION=us-east-1
-      - LOCALSTACK_ENDPOINT_URL=http://localstack:4566
-
   fastapi:
     build: .
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
@@ -42,6 +6,3 @@ services:
       - .:/app
     ports:
       - "8000:8000"
-    depends_on:
-      setup-localstack:
-        condition: service_completed_successfully

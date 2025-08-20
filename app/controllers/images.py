@@ -17,6 +17,7 @@ from app.services.naming_service import NamingService
 from app.services.s3_service import S3Service
 from app.services.database_service import DynamoDBService
 from app.services.description_service import DescriptionService
+from app.core.config import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -215,13 +216,18 @@ async def list_user_images_controller(
     s3_service: S3Service,
     db_service: DynamoDBService,
 ) -> List[ImageResponse]:
+    settings = get_settings()
     image_records = await db_service.get_user_images(current_user.id)
 
     async def _build_response(record):
-        original_url, thumbnail_url = await asyncio.gather(
-            s3_service.generate_presigned_get_url(record["original_key"]),
-            s3_service.generate_presigned_get_url(record.get("thumbnail_key"))
-        )
+        if settings.IMAGE_URL_MODE == "proxy":
+            original_url = f"/api/v1/images/{record['image_id']}/original"
+            thumbnail_url = f"/api/v1/images/{record['image_id']}/thumbnail" if record.get("thumbnail_key") else None
+        else:
+            original_url, thumbnail_url = await asyncio.gather(
+                s3_service.generate_presigned_get_url(record["original_key"]),
+                s3_service.generate_presigned_get_url(record.get("thumbnail_key"))
+            )
         return ImageResponse(
             id=record["image_id"],
             filename=record["filename"],
@@ -242,16 +248,24 @@ async def get_image_details_controller(
     s3_service: S3Service,
     db_service: DynamoDBService,
 ) -> ImageResponse:
+    settings = get_settings()
     record = await db_service.get_image_record(current_user.id, image_id)
     if not record:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image not found")
+
+    if settings.IMAGE_URL_MODE == "proxy":
+        original_url = f"/api/v1/images/{record['image_id']}/original"
+        thumbnail_url = f"/api/v1/images/{record['image_id']}/thumbnail" if record.get("thumbnail_key") else None
+    else:
+        original_url = await s3_service.generate_presigned_get_url(record["original_key"])
+        thumbnail_url = await s3_service.generate_presigned_get_url(record.get("thumbnail_key"))
 
     return ImageResponse(
         id=record["image_id"],
         filename=record["filename"],
         uploaded_at=record["uploaded_at"],
-        original_url=await s3_service.generate_presigned_get_url(record["original_key"]),
-        thumbnail_url=await s3_service.generate_presigned_get_url(record.get("thumbnail_key")),
+        original_url=original_url,
+        thumbnail_url=thumbnail_url,
         embedding=record.get("embedding"),
         description=record.get("description"),
     )
@@ -357,14 +371,19 @@ async def get_clusters_controller(
         if rec.get("cluster_name"):
             names[int(cid)] = rec["cluster_name"]
 
-    # Build ImageCluster responses with presigned URLs
+    settings = get_settings()
+    # Build ImageCluster responses with URLs according to mode
     clusters: List[ImageCluster] = []
     for cid, recs in grouped.items():
         async def _one(r: Dict) -> ImageResponse:
-            original_url, thumbnail_url = await asyncio.gather(
-                s3_service.generate_presigned_get_url(r["original_key"]),
-                s3_service.generate_presigned_get_url(r.get("thumbnail_key")),
-            )
+            if settings.IMAGE_URL_MODE == "proxy":
+                original_url = f"/api/v1/images/{r['image_id']}/original"
+                thumbnail_url = f"/api/v1/images/{r['image_id']}/thumbnail" if r.get("thumbnail_key") else None
+            else:
+                original_url, thumbnail_url = await asyncio.gather(
+                    s3_service.generate_presigned_get_url(r["original_key"]),
+                    s3_service.generate_presigned_get_url(r.get("thumbnail_key")),
+                )
             return ImageResponse(
                 id=r["image_id"],
                 filename=r["filename"],
