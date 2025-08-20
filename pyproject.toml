@@ -1,15 +1,11 @@
 [project]
 name = "image-upload-service"
 version = "0.1.0"
-description = "Add your description here"
+description = "Image Upload Service with AWS backend."
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "aiobotocore>=2.23.2",
-    "awscli>=1.41.8",
-    "awscli-local>=0.22.0",
-    "boto3>=1.39.8",
-    "botocore>=1.39.8",
     "fastapi>=0.116.1",
     "firebase-admin>=7.0.0",
     "httpx>=0.28.1",
@@ -19,13 +15,7 @@ dependencies = [
     "python-multipart>=0.0.20",
     "rich>=14.1.0",
     "uvicorn[standard]>=0.35.0",
-    "transformers>=4.55.2",
-    "torch>=2.8.0",
     "scikit-learn>=1.7.1",
     "langchain>=0.1.16",
-    "langchain-google-genai>=0.1.0",
-    "sqlalchemy[asyncio]>=2.0.43",
-    "asyncpg>=0.30.0",
-    "qdrant-client>=1.15.1",
     "langchain-openai>=0.3.30",
 ]
